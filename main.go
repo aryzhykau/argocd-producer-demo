@@ -11,8 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	kafka "github.com/segmentio/kafka-go"
 )
+
+var messagesProduced = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "kafka_messages_produced_total",
+	Help: "Total number of Kafka messages successfully produced.",
+})
 
 type Producer struct {
 	writer *kafka.Writer
@@ -135,6 +143,7 @@ func (p *Producer) produce(ctx context.Context, throughput int) {
 			p.mu.Lock()
 			p.produced += int64(throughput)
 			p.mu.Unlock()
+			messagesProduced.Add(float64(throughput))
 			log.Printf("Produced %d messages (seq up to %d)", throughput, seq)
 		}
 	}
@@ -167,6 +176,7 @@ func main() {
 	mux.HandleFunc("/status", p.statusHandler)
 	mux.HandleFunc("/start", p.startHandler)
 	mux.HandleFunc("/stop", p.stopHandler)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	log.Printf("Producer HTTP server listening on :%s", port)
 	log.Printf("  POST /start?throughput=<msg/sec>  — start producing")
