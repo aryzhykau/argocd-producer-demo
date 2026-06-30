@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  update-state:
+    name: Update state repo
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout state repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/argostate-demo
+          token: ${{ secrets.STATE_REPO_PAT }}
+
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.44.3
+        run: |
+          wget -qO /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+
+      - name: Update image tag in dev values
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          yq -i '.image.tag = strenv(IMAGE_TAG)' apps/argocd-producer-demo/dev/values.yaml
+
+      - name: Commit and push
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/argocd-producer-demo/dev/values.yaml
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: bump argocd-producer-demo to ${IMAGE_TAG}"
+          git push
